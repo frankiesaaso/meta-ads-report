@@ -1,4 +1,4 @@
-name: Daily Meta Ads Report
+name: .github/workflows/daily-meta-report.yml
 
 on:
   schedule:
