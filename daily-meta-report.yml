@@ -1,0 +1,32 @@
+name: Daily Meta Ads Report
+
+on:
+  schedule:
+    # 13:30 UTC = 9:30am ET during Eastern Daylight Time (EDT, roughly
+    # mid-March to early November). Once Daylight Saving ends this needs to
+    # become "30 14 * * *" to keep landing at 9:30am ET (EST). Cron on
+    # GitHub Actions always runs in UTC and does not follow DST on its own.
+    - cron: "30 13 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  send-report:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Run report
+        env:
+          META_TOKEN_SAASO: ${{ secrets.META_TOKEN_SAASO }}
+          META_TOKEN_MAPS: ${{ secrets.META_TOKEN_MAPS }}
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          REPORT_TO_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+        run: python scripts/meta_ads_report.py
