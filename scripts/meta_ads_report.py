@@ -18,6 +18,7 @@ import io
 import os
 import smtplib
 import sys
+import time
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.application import MIMEApplication
@@ -54,27 +55,63 @@ ACCOUNTS = [
 BASE_FIELDS = "spend,impressions,clicks,cpc,ctr,actions,action_values,purchase_roas,date_start,date_stop"
 
 
+# Meta error codes that mean "you're being throttled, back off and retry"
+# rather than "this request is fundamentally broken."
+THROTTLE_CODES = {4, 17, 32, 613}
+
+
+def _get_with_diagnostics(url: str, params: dict | None) -> dict:
+    resp = requests.get(url, params=params, timeout=30)
+    if resp.ok:
+        return resp.json()
+
+    try:
+        err = resp.json().get("error", {})
+        code = err.get("code")
+        detail = (
+            f"Meta API error {resp.status_code}: "
+            f"[{err.get('type', '?')} / code {code}"
+            f"{'/' + str(err['error_subcode']) if 'error_subcode' in err else ''}] "
+            f"{err.get('message', resp.text[:300])}"
+        )
+    except Exception:
+        code = None
+        detail = f"Meta API error {resp.status_code}: {resp.text[:300]}"
+
+    exc = RuntimeError(detail)
+    exc.throttled = code in THROTTLE_CODES  # type: ignore[attr-defined]
+    raise exc
+
+
 def fetch_insights(account_id: str, token: str, level: str | None = None, name_fields: str = "") -> list:
     """Fetch insight rows for an account. level=None -> single aggregated
     account-level row. level='campaign'/'ad' -> one row per entity, with
-    pagination handled so nothing is silently truncated."""
+    pagination handled so nothing is silently truncated. Retries once with
+    backoff on throttling-type errors before giving up."""
     url = f"https://graph.facebook.com/{GRAPH_API_VERSION}/{account_id}/insights"
     fields = BASE_FIELDS + (f",{name_fields}" if name_fields else "")
-    params = {
+    base_params = {
         "fields": fields,
         "date_preset": "yesterday",
         "access_token": token,
         "limit": 500,
     }
     if level:
-        params["level"] = level
+        base_params["level"] = level
 
     rows = []
     next_url = url
+    params = base_params
     while next_url:
-        resp = requests.get(next_url, params=params, timeout=30)
-        resp.raise_for_status()
-        data = resp.json()
+        for attempt in range(3):
+            try:
+                data = _get_with_diagnostics(next_url, params)
+                break
+            except RuntimeError as e:
+                if getattr(e, "throttled", False) and attempt < 2:
+                    time.sleep(15 * (attempt + 1))
+                    continue
+                raise
         rows.extend(data.get("data", []))
         next_url = data.get("paging", {}).get("next")
         params = None  # paging "next" already contains the full query string
@@ -251,12 +288,14 @@ def main():
                 account_summaries[label] = build_metrics(acct_rows[0], name=label)
 
             # --- campaign level ---
+            time.sleep(2)  # small gap between calls to stay well under rate limits
             camp_rows = fetch_insights(acct["account_id"], token, level="campaign", name_fields="campaign_name")
             campaigns = [build_metrics(r, name=r.get("campaign_name", "(unnamed)")) for r in camp_rows]
             campaigns.sort(key=lambda m: m["spend"], reverse=True)
             campaign_sections.append((label, campaigns))
 
             # --- ad level ---
+            time.sleep(2)
             ad_rows = fetch_insights(
                 acct["account_id"], token, level="ad",
                 name_fields="ad_name,adset_name,campaign_name",
