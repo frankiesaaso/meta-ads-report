@@ -329,7 +329,19 @@ def main():
             errors.append(f"{label}: {e}")
 
     if not account_summaries:
-        html = "<p>No data could be fetched today.</p><ul>" + "".join(f"<li>{e}</li>" for e in errors) + "</ul>"
+        # This job may be one of several retry attempts (see the workflow
+        # file) that run on separate GitHub-hosted runners — different
+        # runners get different outbound IPs, and Meta has intermittently
+        # blocked calls from some of them ("API access blocked") even with
+        # a fully valid token. SUPPRESS_ERROR_EMAIL is set on all but the
+        # last attempt so a transient block on one runner doesn't email an
+        # alarming error when a later retry is likely to just work.
+        if os.environ.get("SUPPRESS_ERROR_EMAIL") == "true":
+            print("Fetch failed on this attempt (will retry on a fresh runner):")
+            for e in errors:
+                print(f"  - {e}")
+            sys.exit(1)
+        html = "<p>No data could be fetched today, after retrying on multiple runners.</p><ul>" + "".join(f"<li>{e}</li>" for e in errors) + "</ul>"
         send_email("Meta Ads Daily Report - ERROR", html)
         sys.exit(1)
 
