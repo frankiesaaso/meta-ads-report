@@ -1,28 +1,84 @@
-name: .github/workflows/daily-meta-report.yml
+name: Daily Meta Ads Report
 
 on:
   schedule:
-    # 13:30 UTC = 9:30am ET during Eastern Daylight Time (EDT, roughly
-    # mid-March to early November). Once Daylight Saving ends this needs to
-    # become "30 14 * * *" to keep landing at 9:30am ET (EST). Cron on
-    # GitHub Actions always runs in UTC and does not follow DST on its own.
-    - cron: "30 13 * * *"
+    # 13:00 UTC = 9:00am ET during Eastern Daylight Time (EDT, roughly
+    # mid-March to early November). Once Daylight Saving ends (Nov 1, 2026)
+    # this needs to become "0 14 * * *" to keep landing at 9:00am ET (EST).
+    # Cron on GitHub Actions always runs in UTC and does not follow DST on
+    # its own.
+    - cron: "0 13 * * *"
   workflow_dispatch: {}
 
 jobs:
-  send-report:
+  attempt-1:
     runs-on: ubuntu-latest
+    continue-on-error: true
+    outputs:
+      outcome: ${{ steps.run.outcome }}
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - run: pip install requests
+      - id: run
+        name: Run report
+        continue-on-error: true
+        env:
+          META_TOKEN_SAASO: ${{ secrets.META_TOKEN_SAASO }}
+          META_TOKEN_MAPS: ${{ secrets.META_TOKEN_MAPS }}
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          REPORT_TO_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          SUPPRESS_ERROR_EMAIL: "true"
+        run: python scripts/meta_ads_report.py
 
-      - name: Install dependencies
-        run: pip install requests
+  # Meta has occasionally blocked API calls from a particular GitHub-hosted
+  # runner's IP even with a fully valid token ("API access blocked"),
+  # while the very same token works fine moments later on a different
+  # runner. Each job below runs on a fresh runner (a different IP), so a
+  # transient block on one attempt usually clears on the next.
+  attempt-2:
+    needs: attempt-1
+    if: needs.attempt-1.outputs.outcome == 'failure'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    outputs:
+      outcome: ${{ steps.run.outcome }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests
+      - name: Wait before retry
+        run: sleep 180
+      - id: run
+        name: Run report (retry 1)
+        continue-on-error: true
+        env:
+          META_TOKEN_SAASO: ${{ secrets.META_TOKEN_SAASO }}
+          META_TOKEN_MAPS: ${{ secrets.META_TOKEN_MAPS }}
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          REPORT_TO_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          SUPPRESS_ERROR_EMAIL: "true"
+        run: python scripts/meta_ads_report.py
 
-      - name: Run report
+  attempt-3:
+    needs: attempt-2
+    if: needs.attempt-2.outputs.outcome == 'failure'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests
+      - name: Wait before final retry
+        run: sleep 300
+      - name: Run report (final attempt - emails an error if this also fails)
         env:
           META_TOKEN_SAASO: ${{ secrets.META_TOKEN_SAASO }}
           META_TOKEN_MAPS: ${{ secrets.META_TOKEN_MAPS }}
